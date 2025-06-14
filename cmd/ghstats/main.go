@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"log"
 	"os"
 
@@ -12,6 +14,17 @@ import (
 
 func main() {
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
+	repoNamePtr := flag.String("repo", "", "The repository to look up in 'owner/repo' format (e.g., 'google/go-github')")
+
+	flag.Parse()
+
+	if *repoNamePtr == "" {
+		logger.Println("Error: The --repo flag is required.")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+	repoName := *repoNamePtr
+
 	ctx := context.Background()
 
 	cfg, err := config.Load()
@@ -19,17 +32,29 @@ func main() {
 		logger.Fatalf("Config couldn't be loaded: %v", err)
 	}
 
-	gh := github.NewClient()
-
-	stats, _ := gh.GetRepoStats(context.Background(), "akyTheDev/currency-bot")
-
 	rc, err := cache.NewRedisClient(ctx, cfg.RedisURL)
 	if err != nil {
 		logger.Fatalf("Couldn't connect to redis: %v", err)
 	}
 
-	err = rc.SetRepoStats(ctx, "akythedev/currency-bot", stats)
+	gh := github.NewClient()
+	stats, err := rc.GetRepoStats(ctx, repoName)
+
 	if err != nil {
-		logger.Fatalf("Couldn't insert to redis :%v", err)
+		if errors.Is(err, cache.ErrNotFound) {
+			stats, err = gh.GetRepoStats(ctx, repoName)
+			if err != nil {
+				logger.Fatalf("Failed while reading from GitHub api: %v", err)
+			}
+
+			err = rc.SetRepoStats(ctx, repoName, stats)
+			if err != nil {
+				logger.Fatalf("Failed while setting cache: %v", err)
+			}
+		} else {
+			logger.Fatalf("Failed while reading cache from redis: %v", err)
+		}
 	}
+
+	stats.Display()
 }
